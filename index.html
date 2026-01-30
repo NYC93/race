@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bib Tracker OCR</title>
+    <script src="https://unpkg.com/tesseract.js@v2.1.0/dist/tesseract.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; text-align: center; background: #f4f4f9; }
+        h2 { margin-bottom: 10px; }
+        
+        /* Video Container */
+        #cam-container { position: relative; width: 100%; max-width: 400px; margin: 0 auto; background: #000; border-radius: 8px; overflow: hidden; }
+        video { width: 100%; height: auto; display: block; }
+        
+        /* Overlay for scanning zone */
+        #scan-region {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 60%; height: 30%; border: 2px solid #00ff00; box-shadow: 0 0 10px #00ff00;
+            background: rgba(0, 255, 0, 0.1); display: flex; align-items: center; justify-content: center;
+            color: #fff; font-size: 12px;
+        }
+
+        /* Controls */
+        .controls { margin: 20px 0; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+        button { padding: 12px 24px; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; color: white; transition: 0.2s; }
+        #btn-start { background-color: #28a745; }
+        #btn-stop { background-color: #dc3545; display: none; }
+        #btn-reset { background-color: #6c757d; }
+        
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* Timer Display */
+        #timer { font-size: 2.5rem; font-weight: bold; font-family: monospace; color: #333; margin: 10px 0; }
+        #status { height: 20px; font-size: 0.9rem; color: #666; margin-bottom: 10px; }
+
+        /* Results Table */
+        table { width: 100%; max-width: 600px; margin: 20px auto; border-collapse: collapse; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        th, td { padding: 12px; border-bottom: 1px solid #ddd; text-align: center; }
+        th { background-color: #007bff; color: white; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        .new-entry { animation: highlight 2s; }
+        
+        @keyframes highlight {
+            0% { background-color: #ffff99; }
+            100% { background-color: transparent; }
+        }
+    </style>
+</head>
+<body>
+
+    <h2>🏃 Race Bib Tracker</h2>
+    
+    <div id="cam-container">
+        <video id="video" playsinline autoplay muted></video>
+        <div id="scan-region">Focus Bib Here</div>
+    </div>
+    
+    <canvas id="canvas" style="display:none;"></canvas>
+
+    <div id="timer">00:00:00</div>
+    <div id="status">Initializing OCR Engine...</div>
+
+    <div class="controls">
+        <button id="btn-start" disabled>Start Race</button>
+        <button id="btn-stop">Stop Race</button>
+        <button id="btn-reset">Reset</button>
+    </div>
+
+    <h3>Results</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Bib #</th>
+                <th>Lap</th>
+                <th>Split Time</th>
+            </tr>
+        </thead>
+        <tbody id="results-body">
+            </tbody>
+    </table>
+
+<script>
+    // --- Configuration ---
+    const SCAN_INTERVAL_MS = 1000; // Scan every 1 second (Balance battery vs speed)
+    const LAP_COOLDOWN_SEC = 20;   // Ignore the same bib number for 20 seconds after detection
+    const MIN_CONFIDENCE = 75;     // OCR must be 75% sure it's a number
+
+    // --- State Variables ---
+    let stream = null;
+    let timerInterval = null;
+    let scanInterval = null;
+    let startTime = 0;
+    let isRacing = false;
+    let worker = null;
+    
+    // Tracking Data
+    // Object structure: { "101": { laps: 1, lastSeen: timestamp } }
+    let runnerData = {}; 
+
+    // --- DOM Elements ---
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const timerDisplay = document.getElementById('timer');
+    const statusDisplay = document.getElementById('status');
+    const resultsBody = document.getElementById('results-body');
+    const btnStart = document.getElementById('btn-start');
+    const btnStop = document.getElementById('btn-stop');
+    const btnReset = document.getElementById('btn-reset');
+
+    // --- 1. Initialize Tesseract OCR ---
+    async function initOCR() {
+        worker = Tesseract.createWorker({
+            logger: m => {
+                if(m.status === 'recognizing text') {
+                    // Optional: Visualize progress
+                }
+            }
+        });
+        
+        await worker.load();
+        await worker.loadLanguage('eng');
+        await worker.initialize('eng');
+        await worker.setParameters({
+            tessedit_char_whitelist: '0123456789', // Only look for numbers
+        });
+        
+        statusDisplay.innerText = "Camera & OCR Ready. Press Start.";
+        btnStart.disabled = false;
+    }
+
+    // --- 2. Camera Setup ---
+    async function startCamera() {
+        try {
+            // Request back camera
+            stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } 
+            });
+            video.srcObject = stream;
+        } catch (err) {
+            alert("Error accessing camera: " + err.message);
+        }
+    }
+
+    // --- 3. Timer Logic ---
+    function updateTimer() {
+        const now = Date.now();
+        const diff = now - startTime;
+        
+        const hrs = Math.floor((diff / (1000 * 60 * 60)) % 24).toString().padStart(2, '0');
+        const mins = Math.floor((diff / (1000 * 60)) % 60).toString().padStart(2, '0');
+        const secs = Math.floor((diff / 1000) % 60).toString().padStart(2, '0');
+        
+        timerDisplay.innerText = `${hrs}:${mins}:${secs}`;
+    }
+
+    // --- 4. OCR & Logic Loop ---
+    async function scanFrame() {
+        if (!isRacing) return;
+
+        // Draw current video frame to canvas
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        
+        // Crop: Only look at the center of the video (Green Box Area) to speed up OCR
+        // Let's assume the green box is roughly the middle 50%
+        const sX = canvas.width * 0.2;
+        const sY = canvas.height * 0.35;
+        const sW = canvas.width * 0.6;
+        const sH = canvas.height * 0.3;
+
+        ctx.drawImage(video, sX, sY, sW, sH, 0, 0, canvas.width, canvas.height);
+
+        // Perform OCR
+        statusDisplay.innerText = "Scanning...";
+        const { data: { text, confidence } } = await worker.recognize(canvas);
+        
+        // Clean result: remove whitespace, ensure it's a number
+        const detectedNumber = text.trim();
+        const numericBib = parseInt(detectedNumber);
+
+        if (confidence > MIN_CONFIDENCE && !isNaN(numericBib) && detectedNumber.length > 0 && detectedNumber.length < 5) {
+            processBib(detectedNumber);
+            statusDisplay.innerText = `Detected: ${detectedNumber} (${Math.floor(confidence)}%)`;
+        } else {
+            statusDisplay.innerText = "Scanning... (Keep Steady)";
+        }
+    }
+
+    function processBib(bib) {
+        const now = Date.now();
+        
+        // Initialize if new runner
+        if (!runnerData[bib]) {
+            runnerData[bib] = { laps: 0, lastSeen: 0 };
+        }
+
+        // Check Cooldown (Prevent double counting same lap)
+        if (now - runnerData[bib].lastSeen > (LAP_COOLDOWN_SEC * 1000)) {
+            // Record Lap
+            runnerData[bib].laps++;
+            runnerData[bib].lastSeen = now;
+            
+            addResultRow(bib, runnerData[bib].laps, timerDisplay.innerText);
+        }
+    }
+
+    function addResultRow(bib, lap, time) {
+        const row = document.createElement('tr');
+        row.classList.add('new-entry');
+        row.innerHTML = `<td><strong>${bib}</strong></td><td>${lap}</td><td>${time}</td>`;
+        
+        // Add to top of list
+        resultsBody.prepend(row);
+    }
+
+    // --- 5. Event Listeners ---
+    btnStart.addEventListener('click', () => {
+        isRacing = true;
+        startTime = Date.now() - (startTime > 0 ? (Date.now() - startTime) : 0); // Resume support logic roughly
+        startTime = Date.now();
+        
+        timerInterval = setInterval(updateTimer, 100);
+        scanInterval = setInterval(scanFrame, SCAN_INTERVAL_MS);
+        
+        btnStart.style.display = 'none';
+        btnStop.style.display = 'inline-block';
+        statusDisplay.innerText = "Race Started! Scanning...";
+    });
+
+    btnStop.addEventListener('click', () => {
+        isRacing = false;
+        clearInterval(timerInterval);
+        clearInterval(scanInterval);
+        
+        btnStart.style.display = 'inline-block';
+        btnStart.innerText = "Resume";
+        btnStop.style.display = 'none';
+        statusDisplay.innerText = "Paused.";
+    });
+
+    btnReset.addEventListener('click', () => {
+        isRacing = false;
+        clearInterval(timerInterval);
+        clearInterval(scanInterval);
+        timerDisplay.innerText = "00:00:00";
+        resultsBody.innerHTML = "";
+        runnerData = {};
+        
+        btnStart.style.display = 'inline-block';
+        btnStart.innerText = "Start Race";
+        btnStop.style.display = 'none';
+        statusDisplay.innerText = "Ready.";
+    });
+
+    // --- Init ---
+    startCamera();
+    initOCR();
+
+</script>
+</body>
+</html>

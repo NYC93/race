@@ -3,74 +3,70 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Bib Tracker 001-040</title>
+    <title>Multi-Scan Bib Tracker</title>
     <script src="https://unpkg.com/tesseract.js@v2.1.0/dist/tesseract.min.js"></script>
     <style>
         * { box-sizing: border-box; }
         body { 
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
-            margin: 0; padding: 0; background: #1a1a1a; color: #fff;
+            margin: 0; padding: 0; background: #111; color: #fff;
             height: 100vh; display: flex; flex-direction: column; overflow: hidden;
         }
 
         header {
             flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center;
-            padding: 10px 15px; background: #222; border-bottom: 2px solid #333;
+            padding: 8px 15px; background: #222; border-bottom: 2px solid #007bff;
         }
-        h2 { margin: 0; font-size: 1rem; color: #007bff; text-transform: uppercase; letter-spacing: 1px; }
-        #timer { font-family: 'Courier New', monospace; font-size: 1.6rem; font-weight: bold; color: #0f0; }
+        #timer { font-family: monospace; font-size: 1.8rem; font-weight: bold; color: #0f0; }
 
-        /* Camera Section - Adjusted for larger scan area */
         #cam-container { 
-            flex: 0 0 50vh; position: relative; background: #000; overflow: hidden;
+            flex: 0 0 45vh; position: relative; background: #000; overflow: hidden;
         }
         video { width: 100%; height: 100%; object-fit: cover; }
         
-        /* Expanded Scan Box Overlay */
+        /* Full-width scan area for multiple runners */
         #scan-region {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 85%; height: 50%; /* INCREASED RADIUS: Was 70x25, now 85x50 */
-            border: 3px solid rgba(0, 255, 0, 0.4); border-radius: 12px;
-            transition: all 0.2s ease;
+            width: 95%; height: 60%; 
+            border: 2px dashed rgba(255, 255, 255, 0.3); border-radius: 10px;
         }
-        .success-flash { border-color: #00ff00 !important; box-shadow: 0 0 30px #00ff00; background: rgba(0,255,0,0.1); }
+        .flash { animation: pulse 0.3s; }
+        @keyframes pulse { 0% { background: rgba(0,255,0,0.3); } 100% { background: transparent; } }
 
         #status-overlay {
-            position: absolute; bottom: 10px; left: 0; right: 0;
-            text-align: center; font-size: 13px; color: #fff; background: rgba(0,0,0,0.5); padding: 4px 0;
+            position: absolute; top: 5px; left: 5px; font-size: 10px; color: #0f0; background: rgba(0,0,0,0.6); padding: 2px 5px;
         }
 
-        .controls { flex: 0 0 auto; padding: 10px; display: flex; gap: 8px; background: #1a1a1a; }
-        button { flex: 1; padding: 14px; border: none; border-radius: 8px; font-size: 15px; font-weight: bold; color: white; cursor: pointer; }
+        .controls { flex: 0 0 auto; padding: 10px; display: flex; gap: 8px; background: #111; }
+        button { flex: 1; padding: 15px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; color: white; cursor: pointer; }
         #btn-start { background-color: #28a745; }
         #btn-stop { background-color: #dc3545; display: none; }
         #btn-reset { background-color: #444; }
-        button:disabled { opacity: 0.2; }
 
-        #table-container { flex: 1 1 auto; overflow-y: auto; background: #fdfdfd; }
+        #table-container { flex: 1 1 auto; overflow-y: auto; background: #eee; }
         table { width: 100%; border-collapse: collapse; color: #222; }
-        th { position: sticky; top: 0; background: #007bff; color: white; padding: 12px; font-size: 13px; z-index: 10; }
-        td { padding: 12px; border-bottom: 1px solid #eee; text-align: center; font-size: 15px; }
-        .new-entry { background-color: #d4edda; font-weight: bold; }
+        th { position: sticky; top: 0; background: #333; color: white; padding: 10px; font-size: 12px; }
+        td { padding: 10px; border-bottom: 1px solid #ccc; text-align: center; font-size: 16px; }
+        tr.new-entry { background-color: #afffa0; font-weight: bold; }
     </style>
 </head>
 <body>
 
     <header>
-        <h2>Bib Scanner</h2>
+        <div style="font-size: 0.8rem;">MULTI-SCAN</div>
         <div id="timer">00:00:00</div>
     </header>
     
     <div id="cam-container">
         <video id="video" playsinline autoplay muted></video>
         <div id="scan-region"></div>
-        <div id="status-overlay">Waking up AI...</div>
+        <div id="status-overlay">AI Offline</div>
     </div>
     
     <canvas id="canvas" style="display:none;"></canvas>
 
     <div class="controls">
-        <button id="btn-start" disabled>START RACE</button>
+        <button id="btn-start" disabled>START</button>
         <button id="btn-stop">STOP</button>
         <button id="btn-reset">RESET</button>
     </div>
@@ -79,7 +75,7 @@
         <table>
             <thead>
                 <tr>
-                    <th>BIB #</th>
+                    <th>BIB</th>
                     <th>LAP</th>
                     <th>TIME</th>
                 </tr>
@@ -89,120 +85,105 @@
     </div>
 
 <script>
-    const MIN_BIB = 1;
-    const MAX_BIB = 40;
-    const SCAN_INTERVAL_MS = 600; // Faster scanning (0.6s)
-    const LAP_COOLDOWN_SEC = 15;   
-    const MIN_CONFIDENCE = 65;    // Slightly lower confidence to catch movement better
-
-    let stream, timerInterval, scanInterval, startTime = 0, isRacing = false, worker = null;
-    let runnerData = {}; 
+    const MIN_BIB = 1, MAX_BIB = 40;
+    const LAP_COOLDOWN_SEC = 10;   
+    let isRacing = false, worker = null, startTime = 0, timerInterval, runnerData = {};
 
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
-    const timerDisplay = document.getElementById('timer');
-    const statusOverlay = document.getElementById('status-overlay');
-    const scanRegion = document.getElementById('scan-region');
+    const status = document.getElementById('status-overlay');
     const resultsBody = document.getElementById('results-body');
-    const btnStart = document.getElementById('btn-start');
-    const btnStop = document.getElementById('btn-stop');
 
     async function initOCR() {
-        statusOverlay.innerText = "Initializing Engine...";
-        worker = Tesseract.createWorker({
-            workerPath: 'https://unpkg.com/tesseract.js@v2.1.0/dist/worker.min.js',
-            langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-            corePath: 'https://unpkg.com/tesseract.js-core@v2.1.0/tesseract-core.wasm.js'
-        });
+        status.innerText = "Loading AI...";
+        worker = Tesseract.createWorker();
         await worker.load();
         await worker.loadLanguage('eng');
         await worker.initialize('eng');
-        await worker.setParameters({ tessedit_char_whitelist: '0123456789' });
-        statusOverlay.innerText = "System Ready";
-        btnStart.disabled = false;
+        await worker.setParameters({ 
+            tessedit_char_whitelist: '0123456789 ', // Allowed spaces for multi-read
+            tessedit_pageseg_mode: '6' // Assume a single uniform block of text for faster speed
+        });
+        status.innerText = "AI ONLINE";
+        document.getElementById('btn-start').disabled = false;
     }
 
     async function startCamera() {
-        try {
-            stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } 
-            });
-            video.srcObject = stream;
-        } catch (e) { alert("Enable camera permissions in your browser settings."); }
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: "environment", width: 1280, height: 720 } 
+        });
+        video.srcObject = stream;
     }
 
     function updateTimer() {
         const diff = Date.now() - startTime;
-        timerDisplay.innerText = new Date(diff).toISOString().substr(11, 8);
+        document.getElementById('timer').innerText = new Date(diff).toISOString().substr(11, 8);
     }
 
-    async function scanFrame() {
+    // --- RECURSIVE FAST SCAN ---
+    async function quickScan() {
         if (!isRacing) return;
 
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+        // Capture large area
+        canvas.width = 400; // Small canvas = much faster OCR
+        canvas.height = 300;
+        ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, canvas.width, canvas.height);
+
+        const { data: { text } } = await worker.recognize(canvas);
         
-        // CROP AREA: We take a large center-cut of the video to process
-        // This coordinates with the visual green box (85% width, 50% height)
-        const cW = canvas.width * 0.85;
-        const cH = canvas.height * 0.50;
-        const cX = (canvas.width - cW) / 2;
-        const cY = (canvas.height - cH) / 2;
+        // Use Regex to find ALL numbers in the string
+        const detectedNumbers = text.match(/\b\d+\b/g);
 
-        ctx.drawImage(video, cX, cY, cW, cH, 0, 0, canvas.width, canvas.height);
-
-        const { data: { text, confidence } } = await worker.recognize(canvas);
-        const rawNum = parseInt(text.trim());
-
-        if (confidence > MIN_CONFIDENCE && !isNaN(rawNum) && rawNum >= MIN_BIB && rawNum <= MAX_BIB) {
-            const formattedBib = rawNum.toString().padStart(3, '0');
-            if (processBib(formattedBib)) {
-                // Flash the box green on success
-                scanRegion.classList.add('success-flash');
-                setTimeout(() => scanRegion.classList.remove('success-flash'), 500);
-            }
+        if (detectedNumbers) {
+            detectedNumbers.forEach(numStr => {
+                const val = parseInt(numStr);
+                if (val >= MIN_BIB && val <= MAX_BIB) {
+                    recordBib(val.toString().padStart(3, '0'));
+                }
+            });
         }
+
+        // Start next scan immediately without waiting for a fixed interval
+        requestAnimationFrame(quickScan);
     }
 
-    function processBib(bib) {
+    function recordBib(bib) {
         const now = Date.now();
         if (!runnerData[bib]) runnerData[bib] = { laps: 0, lastSeen: 0 };
 
         if (now - runnerData[bib].lastSeen > (LAP_COOLDOWN_SEC * 1000)) {
             runnerData[bib].laps++;
             runnerData[bib].lastSeen = now;
+            
+            // Visual feedback
+            document.getElementById('scan-region').classList.add('flash');
+            setTimeout(() => document.getElementById('scan-region').classList.remove('flash'), 300);
+
             const row = document.createElement('tr');
-            row.classList.add('new-entry');
-            row.innerHTML = `<td><strong>${bib}</strong></td><td>${runnerData[bib].laps}</td><td>${timerDisplay.innerText}</td>`;
+            row.className = 'new-entry';
+            row.innerHTML = `<td>${bib}</td><td>${runnerData[bib].laps}</td><td>${document.getElementById('timer').innerText}</td>`;
             resultsBody.prepend(row);
-            return true;
         }
-        return false;
     }
 
-    btnStart.addEventListener('click', () => {
+    document.getElementById('btn-start').addEventListener('click', () => {
         isRacing = true;
-        startTime = startTime === 0 ? Date.now() : Date.now() - (Date.now() - startTime);
+        startTime = Date.now();
         timerInterval = setInterval(updateTimer, 100);
-        scanInterval = setInterval(scanFrame, SCAN_INTERVAL_MS);
-        btnStart.style.display = 'none';
-        btnStop.style.display = 'block';
-        statusOverlay.innerText = "SCANNING 001-040";
+        document.getElementById('btn-start').style.display = 'none';
+        document.getElementById('btn-stop').style.display = 'block';
+        quickScan();
     });
 
-    btnStop.addEventListener('click', () => {
+    document.getElementById('btn-stop').addEventListener('click', () => {
         isRacing = false;
         clearInterval(timerInterval);
-        clearInterval(scanInterval);
-        btnStart.style.display = 'block';
-        btnStart.innerText = "RESUME";
-        btnStop.style.display = 'none';
+        document.getElementById('btn-start').style.display = 'block';
+        document.getElementById('btn-stop').style.display = 'none';
     });
 
-    document.getElementById('btn-reset').addEventListener('click', () => {
-        if(confirm("Clear all data?")) location.reload();
-    });
+    document.getElementById('btn-reset').addEventListener('click', () => { if(confirm("Reset?")) location.reload(); });
 
     startCamera();
     initOCR();

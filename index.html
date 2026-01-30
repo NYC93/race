@@ -3,69 +3,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Wide-Range Bib Tracker</title>
+    <title>Filtered Bib Tracker</title>
     <script src="https://unpkg.com/tesseract.js@v2.1.0/dist/tesseract.min.js"></script>
     <style>
         * { box-sizing: border-box; }
-        body { 
-            font-family: sans-serif; margin: 0; background: #000; color: #fff;
-            height: 100vh; display: flex; flex-direction: column; overflow: hidden;
-        }
-
-        /* Full-screen UI Layout */
-        header { flex: 0 0 auto; display: flex; justify-content: space-between; padding: 10px; background: #111; border-bottom: 2px solid #28a745; }
+        body { font-family: sans-serif; margin: 0; background: #000; color: #fff; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        header { flex: 0 0 auto; display: flex; justify-content: space-between; padding: 10px; background: #111; border-bottom: 2px solid #007bff; }
         #timer { font-family: monospace; font-size: 1.8rem; color: #0f0; }
-
-        #cam-container { flex: 1; position: relative; background: #000; overflow: hidden; }
+        #cam-container { flex: 1; position: relative; background: #000; }
         video { width: 100%; height: 100%; object-fit: cover; }
-        
-        /* Visual indicator that the WHOLE screen is the focus */
-        #scan-guide {
-            position: absolute; top: 10px; left: 10px; right: 10px; bottom: 10px;
-            border: 1px dashed rgba(255,255,255,0.2); pointer-events: none;
-        }
-
+        #status-bar { position: absolute; bottom: 0; width: 100%; background: rgba(0,0,0,0.7); font-size: 12px; padding: 5px; text-align: center; color: #aaa; }
         .controls { flex: 0 0 auto; padding: 10px; display: flex; gap: 8px; background: #111; }
-        button { flex: 1; padding: 15px; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; color: white; }
+        button { flex: 1; padding: 15px; border: none; border-radius: 8px; font-weight: bold; color: white; }
         #btn-start { background-color: #28a745; }
         #btn-stop { background-color: #dc3545; display: none; }
-        #btn-reset { background-color: #444; }
-
-        #table-container { flex: 0 0 35vh; overflow-y: auto; background: #eee; }
+        #table-container { flex: 0 0 30vh; overflow-y: auto; background: #eee; }
         table { width: 100%; border-collapse: collapse; color: #000; }
-        th { position: sticky; top: 0; background: #222; color: #fff; padding: 8px; font-size: 12px; }
-        td { padding: 10px; border-bottom: 1px solid #ccc; text-align: center; font-size: 1.2rem; font-weight: bold; }
-        tr.active-row { background-color: #bfffbf; }
+        th { position: sticky; top: 0; background: #222; color: #fff; padding: 8px; }
+        td { padding: 8px; border-bottom: 1px solid #ccc; text-align: center; font-size: 1.1rem; }
+        .confirmed { background-color: #bfffbf; animation: highlight 1s; }
+        @keyframes highlight { from { background: #00ff00; } to { background: #bfffbf; } }
     </style>
 </head>
 <body>
 
     <header>
-        <div style="font-size: 0.7rem; color: #aaa;">FULL-RANGE SCANNER<br>001 - 040</div>
+        <div style="font-size: 0.7rem;">STABLE SCANNER<br>Validating Hits...</div>
         <div id="timer">00:00:00</div>
     </header>
     
     <div id="cam-container">
         <video id="video" playsinline autoplay muted></video>
-        <div id="scan-guide"></div>
+        <div id="status-bar">Waiting for Start...</div>
     </div>
     
     <canvas id="canvas" style="display:none;"></canvas>
 
     <div class="controls">
-        <button id="btn-start" disabled>START SCAN</button>
+        <button id="btn-start" disabled>INITIALIZING...</button>
         <button id="btn-stop">STOP</button>
-        <button id="btn-reset">RESET</button>
+        <button id="btn-reset" style="background:#444">RESET</button>
     </div>
 
     <div id="table-container">
         <table>
             <thead>
-                <tr>
-                    <th>BIB</th>
-                    <th>LAP</th>
-                    <th>LAST SPLIT</th>
-                </tr>
+                <tr><th>BIB</th><th>LAP</th><th>TIME</th></tr>
             </thead>
             <tbody id="results-body"></tbody>
         </table>
@@ -73,74 +56,89 @@
 
 <script>
     let isRacing = false, worker = null, startTime = 0, timerInterval, runnerData = {};
-    const LAP_COOLDOWN = 12000; // 12 seconds ignore period
+    
+    // --- ANTI-GHOSTING LOGIC ---
+    let candidates = {}; // Format: { "005": count }
+    const REQUIRED_CONFIRMATIONS = 2; // Number of times we must see the bib before logging it
+    const LAP_COOLDOWN = 15000; 
 
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
     const resultsBody = document.getElementById('results-body');
+    const statusBar = document.getElementById('status-bar');
 
     async function initOCR() {
         worker = Tesseract.createWorker();
         await worker.load();
         await worker.loadLanguage('eng');
         await worker.initialize('eng');
-        // Optimization: treat the image as a sparse text block to find numbers anywhere
         await worker.setParameters({ 
             tessedit_char_whitelist: '0123456789',
-            tessedit_pageseg_mode: '11' // OSD (Orientation and Script Detection) only
+            tessedit_pageseg_mode: '11' 
         });
         document.getElementById('btn-start').disabled = false;
         document.getElementById('btn-start').innerText = "START RACE";
+        statusBar.innerText = "System Ready. Point at Bibs.";
     }
 
     async function startCamera() {
         const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } 
+            video: { facingMode: "environment", width: 1280, height: 720 } 
         });
         video.srcObject = stream;
     }
 
-    async function fullFrameScan() {
+    async function scanLoop() {
         if (!isRacing) return;
 
-        // Using a slightly higher resolution for the canvas (640px) 
-        // helps catch "small" numbers that are further away.
         canvas.width = 640;
         canvas.height = (video.videoHeight / video.videoWidth) * 640;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-        const { data: { text } } = await worker.recognize(canvas);
-        
-        // Match any 1-3 digit numbers
+        const { data: { text, confidence } } = await worker.recognize(canvas);
         const found = text.match(/\b\d{1,3}\b/g);
 
-        if (found) {
+        if (found && confidence > 50) {
             found.forEach(numStr => {
                 const val = parseInt(numStr);
                 if (val >= 1 && val <= 40) {
-                    logBib(val.toString().padStart(3, '0'));
+                    validateBib(val.toString().padStart(3, '0'));
                 }
             });
+        } else {
+            // Gradually clear candidates if nothing is found to keep memory clean
+            candidates = {};
         }
-        requestAnimationFrame(fullFrameScan);
+        requestAnimationFrame(scanLoop);
+    }
+
+    function validateBib(bib) {
+        // If already in cooldown, ignore
+        if (runnerData[bib] && (Date.now() - runnerData[bib].lastSeen < LAP_COOLDOWN)) return;
+
+        // Increment candidate count
+        candidates[bib] = (candidates[bib] || 0) + 1;
+        statusBar.innerText = `Seeing ${bib}... (${candidates[bib]}/${REQUIRED_CONFIRMATIONS})`;
+
+        if (candidates[bib] >= REQUIRED_CONFIRMATIONS) {
+            logBib(bib);
+            delete candidates[bib]; // Reset for next time
+        }
     }
 
     function logBib(bib) {
         const now = Date.now();
         if (!runnerData[bib]) runnerData[bib] = { laps: 0, lastSeen: 0 };
-
-        if (now - runnerData[bib].lastSeen > LAP_COOLDOWN) {
-            runnerData[bib].laps++;
-            runnerData[bib].lastSeen = now;
-            
-            const row = document.createElement('tr');
-            row.className = 'active-row';
-            row.innerHTML = `<td>${bib}</td><td>${runnerData[bib].laps}</td><td>${document.getElementById('timer').innerText}</td>`;
-            resultsBody.prepend(row);
-            
-            setTimeout(() => row.className = '', 2000);
-        }
+        
+        runnerData[bib].laps++;
+        runnerData[bib].lastSeen = now;
+        
+        const row = document.createElement('tr');
+        row.className = 'confirmed';
+        row.innerHTML = `<td>${bib}</td><td>${runnerData[bib].laps}</td><td>${document.getElementById('timer').innerText}</td>`;
+        resultsBody.prepend(row);
+        statusBar.innerText = `CONFIRMED BIB ${bib}`;
     }
 
     function updateTimer() {
@@ -154,7 +152,7 @@
         timerInterval = setInterval(updateTimer, 100);
         document.getElementById('btn-start').style.display = 'none';
         document.getElementById('btn-stop').style.display = 'block';
-        fullFrameScan();
+        scanLoop();
     });
 
     document.getElementById('btn-stop').addEventListener('click', () => {

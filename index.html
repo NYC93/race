@@ -3,330 +3,202 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>PE Track Timer - Bib Scanner</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Using Tesseract.js for OCR (Optical Character Recognition) to read bib numbers -->
-    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+    <title>Pro Bib Tracker</title>
+    <script src="https://unpkg.com/tesseract.js@v2.1.0/dist/tesseract.min.js"></script>
     <style>
-        .video-container {
-            position: relative;
-            width: 100%;
-            max-width: 500px;
-            margin: 0 auto;
-            border-radius: 12px;
-            overflow: hidden;
-            background: #000;
+        * { box-sizing: border-box; }
+        body { 
+            font-family: sans-serif; margin: 0; background: #000; color: #fff; 
+            height: 100vh; display: flex; flex-direction: column; overflow: hidden; 
         }
-        #video-feed {
-            width: 100%;
-            height: auto;
-            transform: scaleX(1); /* No mirroring for OCR */
+        
+        /* Compact Header */
+        header { 
+            flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center;
+            padding: 5px 12px; background: #1a1a1a; border-bottom: 1px solid #333;
         }
-        .scan-overlay {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 60%;
-            height: 40%;
-            border: 2px solid #ef4444;
-            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
-            pointer-events: none;
+        #timer { font-family: monospace; font-size: 1.5rem; color: #0f0; }
+        .limit-label { font-size: 0.6rem; color: #888; text-transform: uppercase; }
+
+        /* Camera Viewport */
+        #cam-container { flex: 1; position: relative; background: #000; overflow: hidden; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        #status-bar { 
+            position: absolute; bottom: 0; width: 100%; background: rgba(0,0,0,0.6); 
+            font-size: 11px; padding: 4px; text-align: center; color: #0f0; 
         }
-        .scan-line {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 2px;
-            background: #ef4444;
-            animation: scan 2s linear infinite;
+
+        /* Button Row - Fixed at bottom of camera */
+        .controls { 
+            flex: 0 0 auto; display: flex; gap: 5px; padding: 8px; background: #111; 
         }
-        @keyframes scan {
-            0% { top: 0; }
-            50% { top: 100%; }
-            100% { top: 0; }
+        button { 
+            flex: 1; padding: 12px 5px; border: none; border-radius: 4px; 
+            font-weight: bold; font-size: 14px; color: white; transition: 0.2s;
         }
+        #btn-start { background-color: #28a745; }
+        #btn-stop { background-color: #dc3545; display: none; }
+        #btn-reset { background-color: #444; }
+        button:disabled { opacity: 0.3; }
+
+        /* Results Table - Fixed Height */
+        #table-container { 
+            flex: 0 0 30vh; overflow-y: auto; background: #fff; 
+        }
+        table { width: 100%; border-collapse: collapse; color: #222; }
+        th { 
+            position: sticky; top: 0; background: #333; color: #fff; 
+            padding: 6px; font-size: 11px; text-align: center; 
+        }
+        td { padding: 8px 4px; border-bottom: 1px solid #ddd; text-align: center; font-size: 14px; }
+        
+        .confirmed { background-color: #c8ffc8; font-weight: bold; }
     </style>
 </head>
-<body class="bg-slate-50 min-h-screen text-slate-900 font-sans">
+<body>
 
-    <!-- Header -->
-    <header class="bg-blue-700 text-white p-4 shadow-lg sticky top-0 z-50">
-        <div class="max-w-4xl mx-auto flex justify-between items-center">
-            <h1 class="text-xl font-bold italic">🏃‍♂️ TRACK TIMER</h1>
-            <div id="master-clock" class="text-2xl font-mono font-bold">00:00.00</div>
+    <header>
+        <div>
+            <div class="limit-label">Scanning Bibs</div>
+            <div style="font-size: 0.9rem; font-weight: bold;">001 - 040</div>
         </div>
+        <div id="timer">00:00:00</div>
     </header>
+    
+    <div id="cam-container">
+        <video id="video" playsinline autoplay muted></video>
+        <div id="status-bar">Initializing AI...</div>
+    </div>
+    
+    <canvas id="canvas" style="display:none;"></canvas>
 
-    <main class="max-w-4xl mx-auto p-4 space-y-6">
-        
-        <!-- Setup Phase -->
-        <section id="setup-section" class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-            <h2 class="text-lg font-semibold mb-4">1. Setup Student List</h2>
-            <p class="text-sm text-slate-500 mb-4">Upload a CSV with 'Bib' and 'Name' columns, or use the default list below.</p>
-            <input type="file" id="csv-upload" accept=".csv" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 mb-4">
-            
-            <div class="flex gap-2">
-                <button id="start-btn" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-4 rounded-xl shadow-lg transition-all transform active:scale-95">
-                    START RACE
-                </button>
-            </div>
-        </section>
+    <div class="controls">
+        <button id="btn-start" disabled>START</button>
+        <button id="btn-stop">STOP</button>
+        <button id="btn-reset">RESET</button>
+    </div>
 
-        <!-- Active Timing Phase -->
-        <section id="timing-section" class="hidden space-y-4">
-            <div class="video-container shadow-2xl">
-                <video id="video-feed" autoplay playsinline muted></video>
-                <div class="scan-overlay">
-                    <div class="scan-line"></div>
-                </div>
-                <div id="scan-status" class="absolute bottom-4 left-0 right-0 text-center text-white text-xs bg-black/50 py-1">
-                    Align Bib Number in Red Box
-                </div>
-            </div>
-
-            <div class="grid grid-cols-2 gap-3">
-                <button id="capture-manual" class="bg-blue-600 text-white p-4 rounded-xl font-bold shadow-md active:bg-blue-800">
-                    📸 CAPTURE BIB
-                </button>
-                <button id="stop-race" class="bg-slate-200 text-slate-700 p-4 rounded-xl font-bold shadow-md">
-                    END RACE
-                </button>
-            </div>
-
-            <!-- Manual Entry Fallback -->
-            <div class="bg-white p-4 rounded-xl border border-slate-200 flex gap-2">
-                <input type="number" id="manual-bib" placeholder="Manual Bib No." class="flex-1 border p-2 rounded-lg outline-none focus:ring-2 focus:ring-blue-500">
-                <button id="manual-submit" class="bg-slate-800 text-white px-4 py-2 rounded-lg font-bold">LOG</button>
-            </div>
-        </section>
-
-        <!-- Results Table -->
-        <section id="results-section" class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div class="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
-                <h2 class="font-bold">Captured Times</h2>
-                <button id="export-btn" class="text-blue-600 text-sm font-bold">EXPORT CSV</button>
-            </div>
-            <div class="overflow-x-auto">
-                <table id="results-table" class="w-full text-left">
-                    <thead>
-                        <tr class="bg-slate-100 text-slate-600 text-xs uppercase">
-                            <th class="p-3">Bib</th>
-                            <th class="p-3">Name</th>
-                            <th class="p-3">Time</th>
-                        </tr>
-                    </thead>
-                    <tbody id="results-body">
-                        <!-- Result rows will appear here -->
-                    </tbody>
-                </table>
-            </div>
-        </section>
-    </main>
-
-    <canvas id="canvas-capture" style="display:none;"></canvas>
-
-    <script>
-        // --- DATA & STATE ---
-        let students = [
-            { bib: "101", name: "Student A" },
-            { bib: "102", name: "Student B" },
-            { bib: "103", name: "Student C" },
-            { bib: "104", name: "Student D" },
-            { bib: "105", name: "Student E" }
-        ];
-        let recordedResults = [];
-        let startTime = null;
-        let timerInterval = null;
-        let isProcessing = false;
-
-        const video = document.getElementById('video-feed');
-        const canvas = document.getElementById('canvas-capture');
-        const ctx = canvas.getContext('2d');
-        const masterClock = document.getElementById('master-clock');
-        const statusEl = document.getElementById('scan-status');
-
-        // --- CORE FUNCTIONS ---
-
-        function formatTime(ms) {
-            const minutes = Math.floor(ms / 60000);
-            const seconds = Math.floor((ms % 60000) / 1000);
-            const centiseconds = Math.floor((ms % 1000) / 10);
-            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
-        }
-
-        async function initCamera() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: 'environment' }, 
-                    audio: false 
-                });
-                video.srcObject = stream;
-            } catch (err) {
-                alert("Camera access denied. Please allow camera to scan bibs.");
-            }
-        }
-
-        function startTimer() {
-            startTime = Date.now();
-            timerInterval = setInterval(() => {
-                const elapsed = Date.now() - startTime;
-                masterClock.textContent = formatTime(elapsed);
-            }, 50);
-        }
-
-        function logTime(bibNo) {
-            const cleanBib = bibNo.toString().trim();
-            const student = students.find(s => s.bib === cleanBib);
-            const currentTime = masterClock.textContent;
-
-            // Check if already recorded
-            if (recordedResults.find(r => r.bib === cleanBib)) {
-                showMessage(`Bib ${cleanBib} already recorded.`);
-                return;
-            }
-
-            const record = {
-                bib: cleanBib,
-                name: student ? student.name : "Unknown",
-                time: currentTime
-            };
-
-            recordedResults.unshift(record); // Add to start of array
-            updateTable();
-            showMessage(`Logged Bib ${cleanBib}: ${currentTime}`, "success");
-        }
-
-        function updateTable() {
-            const body = document.getElementById('results-body');
-            body.innerHTML = recordedResults.map(r => `
-                <tr class="border-t border-slate-100 animate-in fade-in slide-in-from-top-2 duration-300">
-                    <td class="p-3 font-bold">${r.bib}</td>
-                    <td class="p-3 text-slate-600 text-sm">${r.name}</td>
-                    <td class="p-3 font-mono text-blue-700">${r.time}</td>
+    <div id="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th width="33%">BIB #</th>
+                    <th width="33%">LAP</th>
+                    <th width="34%">TIME</th>
                 </tr>
-            `).join('');
-        }
+            </thead>
+            <tbody id="results-body"></tbody>
+        </table>
+    </div>
 
-        function showMessage(msg, type = "info") {
-            statusEl.textContent = msg;
-            statusEl.className = `absolute bottom-4 left-0 right-0 text-center text-white text-xs py-1 ${type === 'success' ? 'bg-green-600' : 'bg-red-600'}`;
-            setTimeout(() => {
-                statusEl.textContent = "Align Bib Number in Red Box";
-                statusEl.className = "absolute bottom-4 left-0 right-0 text-center text-white text-xs bg-black/50 py-1";
-            }, 3000);
-        }
+<script>
+    let isRacing = false, worker = null, startTime = 0, timerInterval, runnerData = {};
+    let candidates = {}; 
+    const REQUIRED_CONFIRMATIONS = 3; // Seeing the number 3 times before logging
+    const LAP_COOLDOWN = 15000; 
 
-        // --- OCR LOGIC ---
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const resultsBody = document.getElementById('results-body');
+    const statusBar = document.getElementById('status-bar');
 
-        async function captureAndScan() {
-            if (isProcessing) return;
-            isProcessing = true;
-            statusEl.textContent = "Processing Bib...";
-
-            // Draw current video frame to canvas
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            
-            // Focus on the center area (the red box area)
-            const cropX = canvas.width * 0.2;
-            const cropY = canvas.height * 0.3;
-            const cropW = canvas.width * 0.6;
-            const cropH = canvas.height * 0.4;
-
-            ctx.drawImage(video, 0, 0);
-            
-            // Run Tesseract OCR
-            try {
-                const result = await Tesseract.recognize(
-                    canvas,
-                    'eng',
-                    { logger: m => console.log(m.status) }
-                );
-
-                // Look for numbers in the text
-                const text = result.data.text;
-                const matches = text.match(/\b\d{2,4}\b/g); // Find 2-4 digit numbers
-
-                if (matches && matches.length > 0) {
-                    logTime(matches[0]);
-                } else {
-                    showMessage("No bib number detected. Try manual entry.");
-                }
-            } catch (err) {
-                console.error(err);
-                showMessage("OCR Error.");
-            } finally {
-                isProcessing = false;
-            }
-        }
-
-        // --- EVENT LISTENERS ---
-
-        document.getElementById('start-btn').addEventListener('click', () => {
-            document.getElementById('setup-section').classList.add('hidden');
-            document.getElementById('timing-section').classList.remove('hidden');
-            initCamera();
-            startTimer();
+    async function initOCR() {
+        worker = Tesseract.createWorker();
+        await worker.load();
+        await worker.loadLanguage('eng');
+        await worker.initialize('eng');
+        await worker.setParameters({ 
+            tessedit_char_whitelist: '0123456789',
+            tessedit_pageseg_mode: '11' 
         });
+        document.getElementById('btn-start').disabled = false;
+        statusBar.innerText = "System Ready";
+    }
 
-        document.getElementById('capture-manual').addEventListener('click', captureAndScan);
-
-        document.getElementById('manual-submit').addEventListener('click', () => {
-            const input = document.getElementById('manual-bib');
-            if (input.value) {
-                logTime(input.value);
-                input.value = "";
-            }
-        });
-
-        document.getElementById('stop-race').addEventListener('click', () => {
-            if (confirm("End the race and stop the clock?")) {
-                clearInterval(timerInterval);
-                const stream = video.srcObject;
-                const tracks = stream.getTracks();
-                tracks.forEach(track => track.stop());
-                video.srcObject = null;
-                document.getElementById('timing-section').classList.add('hidden');
-            }
-        });
-
-        document.getElementById('csv-upload').addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                const text = event.target.result;
-                const rows = text.split('\n').slice(1); // skip header
-                const newList = rows.map(row => {
-                    const cols = row.split(',');
-                    return { bib: cols[0]?.trim(), name: cols[1]?.trim() };
-                }).filter(s => s.bib);
-                
-                if (newList.length > 0) {
-                    students = newList;
-                    alert(`Loaded ${students.length} students.`);
-                }
-            };
-            reader.readAsText(file);
-        });
-
-        document.getElementById('export-btn').addEventListener('click', () => {
-            if (recordedResults.length === 0) return;
-            
-            let csvContent = "data:text/csv;charset=utf-8,Bib,Name,Time\n";
-            recordedResults.forEach(r => {
-                csvContent += `${r.bib},${r.name},${r.time}\n`;
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment", width: { ideal: 1280 } } 
             });
+            video.srcObject = stream;
+        } catch(e) { statusBar.innerText = "Camera Error"; }
+    }
 
-            const encodedUri = encodeURI(csvContent);
-            const link = document.createElement("a");
-            link.setAttribute("href", encodedUri);
-            link.setAttribute("download", `track_results_${new Date().toISOString().slice(0,10)}.csv`);
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        });
-    </script>
+    async function scanLoop() {
+        if (!isRacing) return;
+
+        canvas.width = 500; // Optimal balance for speed/accuracy
+        canvas.height = (video.videoHeight / video.videoWidth) * 500;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const { data: { text, confidence } } = await worker.recognize(canvas);
+        const found = text.match(/\b\d{1,3}\b/g);
+
+        if (found && confidence > 45) {
+            found.forEach(numStr => {
+                const val = parseInt(numStr);
+                if (val >= 1 && val <= 40) validateBib(val.toString().padStart(3, '0'));
+            });
+        }
+        requestAnimationFrame(scanLoop);
+    }
+
+    function validateBib(bib) {
+        if (runnerData[bib] && (Date.now() - runnerData[bib].lastSeen < LAP_COOLDOWN)) return;
+
+        candidates[bib] = (candidates[bib] || 0) + 1;
+        statusBar.innerText = `Validating Bib ${bib}...`;
+
+        if (candidates[bib] >= REQUIRED_CONFIRMATIONS) {
+            logBib(bib);
+            delete candidates[bib]; 
+        }
+    }
+
+    function logBib(bib) {
+        const now = Date.now();
+        if (!runnerData[bib]) runnerData[bib] = { laps: 0, lastSeen: 0 };
+        
+        runnerData[bib].laps++;
+        runnerData[bib].lastSeen = now;
+        
+        const row = document.createElement('tr');
+        row.className = 'confirmed';
+        row.innerHTML = `<td>${bib}</td><td>${runnerData[bib].laps}</td><td>${document.getElementById('timer').innerText}</td>`;
+        resultsBody.prepend(row);
+        statusBar.innerText = `LOGGED: BIB ${bib}`;
+        setTimeout(() => { if(isRacing) statusBar.innerText = "Scanning..."; }, 2000);
+    }
+
+    function updateTimer() {
+        const diff = Date.now() - startTime;
+        document.getElementById('timer').innerText = new Date(diff).toISOString().substr(11, 8);
+    }
+
+    document.getElementById('btn-start').addEventListener('click', () => {
+        isRacing = true;
+        startTime = startTime === 0 ? Date.now() : Date.now() - (Date.now() - startTime);
+        timerInterval = setInterval(updateTimer, 100);
+        document.getElementById('btn-start').style.display = 'none';
+        document.getElementById('btn-stop').style.display = 'block';
+        scanLoop();
+    });
+
+    document.getElementById('btn-stop').addEventListener('click', () => {
+        isRacing = false;
+        clearInterval(timerInterval);
+        document.getElementById('btn-start').style.display = 'block';
+        document.getElementById('btn-stop').style.display = 'none';
+        statusBar.innerText = "Paused";
+    });
+
+    document.getElementById('btn-reset').addEventListener('click', () => { 
+        if(confirm("Wipe all data?")) location.reload(); 
+    });
+
+    startCamera();
+    initOCR();
+</script>
 </body>
 </html>
